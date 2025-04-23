@@ -1,8 +1,7 @@
-# helloworld
+# Maidle
 
-AstrBot 插件模板
-
-A template plugin for AstrBot plugin feature
+完全仿照水鱼Maidle书写的Astrbot版本。
+曲库数据来自水鱼api。
 
 # 支持
 

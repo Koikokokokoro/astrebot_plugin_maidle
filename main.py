@@ -5,7 +5,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 import astrbot.api.message_components as Comp
 
-@register("maidle", "Koikokokokoro", "灵感和数据来自水鱼maidle的astrbot版", "1.2.0")
+@register("maidle", "Koikokokokoro", "从 maidle.json 随机选歌，猜测后给出比较结果", "1.9.0")
 class Maidle(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -22,76 +22,183 @@ class Maidle(Star):
         self.games = {}
         self.max_tries = 10
 
-    @filter.command("猜歌")
-    async def guess_song(self, event: AstrMessageEvent):
-        raw = "".join(seg.data for seg in event.get_messages() if hasattr(seg, 'data')).strip()
-        content = raw[len("猜歌"):].strip() if raw.startswith("猜歌") else raw
+    @filter.command("maidle")
+    async def maidle(self, event: AstrMessageEvent, content: str):
+        """/maidle start | /maidle <猜测内容> | /maidle end | /maidle help 查看帮助"""
         group_id = str(event.get_group_id())
+        game = self.games.get(group_id)
 
-        # 新游戏
-        if not content:
+        # 显示帮助
+        if content == "help":
+            help_msg = (
+                "/maidle start 开始新一轮猜歌\n"
+                "/maidle <名称/别名/ID> 进行猜测\n"
+                "/maidle end 结束游戏并显示答案"
+            )
+            yield event.plain_result(help_msg)
+            return
+
+        # 开始游戏
+        if content == "start":
+            if game:
+                yield event.plain_result(
+                    "已有游戏未结束，请使用 /maidle end 结束后再开启新一轮。"
+                )
+                return
             if not self.songs:
-                yield event.plain_result("未能加载 maidle.json，无法开始游戏。")
+                yield event.plain_result("未能加载曲库，无法开始游戏。")
                 return
             target = random.choice(self.songs)
             self.games[group_id] = {"target": target, "tries": self.max_tries}
-            yield event.plain_result(f"🎵 猜歌开始！你有 {self.max_tries} 次机会，提交名称/别名/ID 来猜测。")
+            yield event.plain_result(
+                f"🎵 Maidle 开始！你有 {self.max_tries} 次机会，使用 /maidle <名称/别名/ID> 来猜测。"
+            )
             return
 
-        game = self.games.get(group_id)
-        if not game:
-            yield event.plain_result("请先发送 /猜歌 开始游戏。")
-            return
-        if game["tries"] <= 0:
-            yield event.plain_result("机会已用尽，游戏结束。请重新发送 /猜歌 开始新一轮。")
+        # 结束游戏
+        if content == "end":
+            if not game:
+                yield event.plain_result("当前无进行中的猜歌游戏。")
+                return
+            target = game["target"]
+            # 使用最高难度谱面
+            def select_surface(song):
+                lst = []
+                for t, arr in song.get('difficulties', {}).items():
+                    for d in arr:
+                        d['type'] = t
+                        lst.append(d)
+                if not lst:
+                    return {}
+                max_diff = max(lst, key=lambda x: x.get('difficulty', -1))
+                candidates = [d for d in lst if d.get('difficulty') == max_diff.get('difficulty')]
+                if len(candidates) > 1:
+                    return max(candidates, key=lambda x: x.get('level_value', 0))
+                return max_diff
+            h_target = select_surface(target)
+            # 版本标题
+            def ver_title(v):
+                try:
+                    base = (int(v) // 100) * 100
+                    return self.ver_map.get(base, str(v))
+                except:
+                    return str(v)
+            info = (
+                f"🎵 正确曲目信息：\n"
+                f"标题: {target['title']}\n"
+                f"ID: {target['id']}\n"
+                f"曲师: {target.get('artist')}\n"
+                f"流派: {target.get('genre')}\n"
+                f"版本: {ver_title(target.get('version'))}\n"
+                f"BPM: {target.get('bpm')}\n"
+                f"谱师: {h_target.get('note_designer')}\n"
+                f"等级: {h_target.get('level_value')}"
+            )
             del self.games[group_id]
+            yield event.plain_result(info)
             return
 
+        # 猜歌
+        if not game:
+            yield event.plain_result("请先使用 /maidle start 开始游戏。")
+            return
         guess = content
+        # 查找曲目，不存在不扣次数
         guess_song = None
         for song in self.songs:
             if (str(song.get("id")) == guess or song.get("title") == guess or guess in song.get("aliases", [])):
                 guess_song = song
                 break
         if not guess_song:
-            game["tries"] -= 1
-            yield event.plain_result(f"未找到对应曲目，剩余机会：{game['tries']}")
+            yield event.plain_result("未找到对应曲目，请检查输入。次数不扣除。")
             return
 
         target = game["target"]
-        # 比较
-        def cmp_bool(a, b): return "✅" if a == b else "❌"
-        # 读取版本标题
-        def get_ver_title(v): return self.ver_map.get(v, str(v))
+        # 对比
+        def cmp_mark(a, b): return "✅" if a == b else "❌"
+        def ver_mark(gv, tv):
+            try:
+                gv_i, tv_i = int(gv), int(tv)
+                gv_base, tv_base = (gv_i // 100) * 100, (tv_i // 100) * 100
+                if gv_base == tv_base: return "✅"
+                return "➡️" if gv_base < tv_base else "⬅️"
+            except:
+                return cmp_mark(gv, tv)
+        def bpm_mark(gv, tv):
+            try:
+                gv_i, tv_i = int(gv), int(tv)
+                if gv_i == tv_i: return "✅"
+                return "⬇️" if gv_i > tv_i else "⬆️"
+            except:
+                return cmp_mark(gv, tv)
+        def lvl_mark(g, t):
+            try:
+                gv, tv = float(g), float(t)
+                if gv == tv: return "✅"
+                return "⬇️" if gv > tv else "⬆️"
+            except:
+                return cmp_mark(g, t)
 
-        checks = []
-        checks.append(f"歌名: {cmp_bool(guess_song['title'], target['title'])}")
-        checks.append(f"ID: {cmp_bool(guess_song['id'], target['id'])}")
-        checks.append(f"曲师: {cmp_bool(guess_song.get('artist'), target.get('artist'))}")
-        checks.append(f"流派: {cmp_bool(guess_song.get('genre'), target.get('genre'))}")
-        gv = get_ver_title(guess_song.get('version'))
-        tv = get_ver_title(target.get('version'))
-        checks.append(f"版本: {cmp_bool(gv, tv)} (你: {gv}, 正确: {tv})")
-        checks.append(f"BPM: {cmp_bool(guess_song.get('bpm'), target.get('bpm'))}")
-        # 最高难度标准谱面
-        def highest_std(song):
-            stds = song.get('difficulties', {}).get('standard', [])
-            return max(stds, key=lambda x: x.get('difficulty', -1)) if stds else {}
-        h1 = highest_std(guess_song)
-        h2 = highest_std(target)
-        checks.append(f"谱师: {cmp_bool(h1.get('note_designer'), h2.get('note_designer'))}")
-        checks.append(f"等级: {cmp_bool(h1.get('level'), h2.get('level'))}")
+        # 选择
+        def select_surface(song):
+            lst = []
+            for t, arr in song.get('difficulties', {}).items():
+                for d in arr:
+                    d['type'] = t
+                    lst.append(d)
+            if not lst:
+                return {}
+            max_diff = max(lst, key=lambda x: x.get('difficulty', -1))
+            cands = [d for d in lst if d.get('difficulty') == max_diff.get('difficulty')]
+            if len(cands) > 1:
+                return max(cands, key=lambda x: x.get('level_value', 0))
+            return max_diff
+        h_guess = select_surface(guess_song)
+        h_target = select_surface(target)
 
-        # 构建输出
-        reply = [f"🎯 猜测结果（剩余 {game['tries']} 次机会）："] + checks
-        # 结果处理
+        # 谱面类型
+        types_guess = []
+        for t, arr in guess_song.get('difficulties', {}).items():
+            if arr: types_guess.append('SD' if t=='standard' else 'DX')
+        types_guess = '/'.join(types_guess)
+        types_target = []
+        for t, arr in target.get('difficulties', {}).items():
+            if arr: types_target.append('SD' if t=='standard' else 'DX')
+        types_target = '/'.join(types_target)
+
+        # 版本
+        def ver_title(v):
+            try:
+                base = (int(v) // 100) * 100
+                return self.ver_map.get(base, str(v))
+            except:
+                return str(v)
+
+        # 输出
+        lines = []
+        lines.append(f"歌名：{cmp_mark(guess_song['title'], target['title'])}{guess_song['title']}")
+        lines.append(f"谱面类型：{cmp_mark(types_guess, types_target)}{types_guess}")
+        lines.append(f"曲师：{cmp_mark(guess_song.get('artist'), target.get('artist'))}{guess_song.get('artist')}")
+        lines.append(f"流派：{cmp_mark(guess_song.get('genre'), target.get('genre'))}{guess_song.get('genre')}")
+        lines.append(f"版本：{ver_mark(guess_song.get('version'), target.get('version'))}{ver_title(guess_song.get('version'))}")
+        lines.append(f"BPM：{bpm_mark(guess_song.get('bpm'), target.get('bpm'))}{guess_song.get('bpm')}")
+        lines.append(f"谱师：{cmp_mark(h_guess.get('note_designer'), h_target.get('note_designer'))}{h_guess.get('note_designer')}")
+        lines.append(f"等级：{lvl_mark(h_guess.get('level_value'), h_target.get('level_value'))}{h_guess.get('level_value')}")
+
+        # 扣次数及结束判断
+        if guess_song['id'] != target['id']:
+            game['tries'] -= 1
+        header = f"🎯 猜测结果（剩余 {game['tries']} 次机会）："
         if guess_song['id'] == target['id']:
-            reply.append("🎉 猜对了！游戏结束。")
+            footer = "🎉 猜对了！游戏结束。"
+            del self.games[group_id]
+        elif game['tries'] <= 0:
+            footer = f"😢 机会用尽。答案：{target['title']}"
             del self.games[group_id]
         else:
-            game['tries'] -= 1
-            if game['tries'] <= 0:
-                reply.append(f"😢 机会用尽，正确答案：{target['title']} (ID {target['id']})")
-                del self.games[group_id]
+            footer = None
 
-        yield event.plain_result("\n".join(reply))
+        msg = header + "\n" + "\n".join(lines)
+        if footer:
+            msg += "\n" + footer
+        yield event.plain_result(msg)

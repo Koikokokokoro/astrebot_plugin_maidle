@@ -110,7 +110,7 @@ class Maidle(Star):
                 guess_song = song
                 break
         if not guess_song:
-            yield event.plain_result("未找到对应曲目，请检查输入。次数不扣除。")
+            yield event.plain_result("未找到对应曲目，请检查输入。")
             return
 
         target = game["target"]
@@ -177,7 +177,7 @@ class Maidle(Star):
         # 输出
         lines = []
         lines.append(f"歌名：{cmp_mark(guess_song['title'], target['title'])}{guess_song['title']}")
-        lines.append(f"谱面类型：{cmp_mark(types_guess, types_target)}{types_guess}")
+        lines.append(f"类型：{cmp_mark(types_guess, types_target)}{types_guess}")
         lines.append(f"曲师：{cmp_mark(guess_song.get('artist'), target.get('artist'))}{guess_song.get('artist')}")
         lines.append(f"流派：{cmp_mark(guess_song.get('genre'), target.get('genre'))}{guess_song.get('genre')}")
         lines.append(f"版本：{ver_mark(guess_song.get('version'), target.get('version'))}{ver_title(guess_song.get('version'))}")

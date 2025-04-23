@@ -6,5 +6,6 @@
 PS: 水鱼你这json内容怎么怪怪的。<br>
 
 # 支持
+仅aiohttp
 
 [帮助文档](https://astrbot.app)
